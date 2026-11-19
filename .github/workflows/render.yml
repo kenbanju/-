@@ -1,0 +1,81 @@
+name: 動画を生成
+
+on:
+  push:
+    branches: [main]
+    paths: ["episodes/**/episode.json"]
+  workflow_dispatch:
+    inputs:
+      episode:
+        description: "エピソードのフォルダ（例: episodes/001-sleep-hours）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      voicevox:
+        image: voicevox/voicevox_engine:cpu-latest
+        ports:
+          - 50021:50021
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: 準備
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-cjk
+          pip install pillow
+
+      - name: VOICEVOX の起動を待つ
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:50021/version && exit 0
+            sleep 5
+          done
+          exit 1
+
+      - name: 対象のエピソードを決める
+        id: target
+        env:
+          INPUT_EPISODE: ${{ github.event.inputs.episode }}
+        run: |
+          if [ -n "$INPUT_EPISODE" ]; then
+            dirs="$INPUT_EPISODE"
+          else
+            dirs=$(git diff --name-only HEAD^ HEAD -- 'episodes/*/episode.json' | xargs -r -n1 dirname | sort -u | tr '\n' ' ')
+          fi
+          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
+
+      - name: 動画を生成
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DIRS: ${{ steps.target.outputs.dirs }}
+        run: |
+          for d in $DIRS; do
+            python pipeline/render.py "$d"
+          done
+
+      - name: キャラクター基準画像を保存
+        run: |
+          if [ -n "$(git status --porcelain assets)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add assets
+            git commit -m "キャラクター基準画像を追加"
+            git push
+          fi
+
+      - name: 動画をアップロード
+        uses: actions/upload-artifact@v4
+        with:
+          name: videos
+          path: |
+            episodes/*/video.mp4
+            episodes/*/build/*.png
